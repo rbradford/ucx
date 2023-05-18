@@ -300,13 +300,12 @@ static ucs_status_t ucm_reloc_dl_info_get(const struct dl_phdr_info *phdr_info,
 {
     uintptr_t dlpi_addr = phdr_info->dlpi_addr;
     unsigned UCS_V_UNUSED num_symbols;
-    void *jmprel, *rela, *strtab;
+    void *jmprel, *rela, *strtab, *symtab;
     size_t pltrelsz, relasz;
     ucm_dl_info_t *dl_info;
     ucs_status_t status;
     ElfW(Phdr) *phdr, *dphdr;
     int i, ret, found_pt_load;
-    ElfW(Sym) *symtab;
     khiter_t khiter;
     int phsize;
 
@@ -366,11 +365,23 @@ static ucs_status_t ucm_reloc_dl_info_get(const struct dl_phdr_info *phdr_info,
         goto out;
     }
 
+    if (symtab < (void*)dl_info->start) {
+        symtab = (char*)symtab + dlpi_addr;
+    }
+
+    if (strtab < (void*)dl_info->start) {
+        strtab = (char*)strtab + dlpi_addr;
+    }
+
     num_symbols = 0;
 
     /* populate .got.plt */
     jmprel = (void*)ucm_reloc_get_entry(dlpi_addr, dphdr, DT_JMPREL);
     if (jmprel != NULL) {
+        if (jmprel < (void*)dl_info->start) {
+            jmprel = (char*)jmprel + dlpi_addr;
+        }
+
         pltrelsz     = ucm_reloc_get_entry(dlpi_addr, dphdr, DT_PLTRELSZ);
         num_symbols += ucm_dl_populate_symbols(dl_info, dlpi_addr, jmprel,
                                                pltrelsz, strtab, symtab, dl_name);
@@ -379,6 +390,10 @@ static ucs_status_t ucm_reloc_dl_info_get(const struct dl_phdr_info *phdr_info,
     /* populate .got */
     rela = (void*)ucm_reloc_get_entry(dlpi_addr, dphdr, DT_RELA);
     if (rela != NULL) {
+        if (rela < (void*)dl_info->start) {
+            rela = (char*)rela + dlpi_addr;
+        }
+
         relasz       = ucm_reloc_get_entry(dlpi_addr, dphdr, DT_RELASZ);
         num_symbols += ucm_dl_populate_symbols(dl_info, dlpi_addr, rela, relasz,
                                                strtab, symtab, dl_name);
