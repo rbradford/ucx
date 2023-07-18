@@ -73,14 +73,14 @@ void* ucm_reloc_get_orig(const char *symbol, void *replacement)
     if (dl != NULL) {
         (void)dlerror();
         func_ptr = dlsym(dl, symbol);
-        ucm_debug("(libucm) Found symbol %s at %p", symbol, func_ptr);
+        ucm_trace("(libucm) found symbol %s at %p", symbol, func_ptr);
         dlclose(dl);
     }
 
     if (func_ptr == NULL) {
         (void)dlerror();
         func_ptr = dlsym(RTLD_DEFAULT, symbol);
-        ucm_debug("(Default) Found symbol %s at %p", symbol, func_ptr);
+        ucm_trace("(default) found symbol %s at %p", symbol, func_ptr);
         if (func_ptr == replacement) {
             error = dlerror();
             ucm_fatal("could not find address of original %s(): %s", symbol,
