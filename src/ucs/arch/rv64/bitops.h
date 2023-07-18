@@ -11,11 +11,11 @@
 #include <stdint.h>
 
 /* __builtin_ctz(0) is undefined, guard against it. */
-#define ctz_safe(n) ((n) ? __builtin_ctz(n) : 32)
+#define ucs_ctz_safe(n) ((n) ? __builtin_ctz(n) : 32)
 
 static UCS_F_ALWAYS_INLINE unsigned __ucs_ilog2_u32(uint32_t n)
 {
-    return ctz_safe(n);
+    return ucs_ctz_safe(n);
 }
 
 static UCS_F_ALWAYS_INLINE unsigned __ucs_ilog2_u64(uint64_t n)
@@ -30,8 +30,8 @@ static UCS_F_ALWAYS_INLINE unsigned __ucs_ilog2_u64(uint64_t n)
         .value = n
     };
 
-    const int lhs = ctz_safe(n_sto.pvalue.lhs);
-    const int rhs = ctz_safe(n_sto.pvalue.rhs);
+    const int lhs = ucs_ctz_safe(n_sto.pvalue.lhs);
+    const int rhs = ucs_ctz_safe(n_sto.pvalue.rhs);
 
     int val = rhs;
     if (rhs == 32) {
