@@ -46,4 +46,14 @@ ucs_status_t ucm_bistro_patch(void *func_ptr, void *hook, const char *symbol,
                               void **orig_func_p,
                               ucm_bistro_restore_point_t **rp);
 
+/* Lock implementation */
+typedef struct {
+    uint16_t j; /* jump to self */
+} UCS_S_PACKED ucm_bistro_lock_t;
+
+/**
+ * Helper functions to improve atomicity of function patching
+ */
+void ucm_bistro_patch_lock(void *dst);
+
 #endif
