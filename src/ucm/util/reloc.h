@@ -54,12 +54,12 @@ ucs_status_t ucm_reloc_modify(ucm_reloc_patch_t* patch);
 static UCS_F_MAYBE_UNUSED
 void* ucm_reloc_get_orig(const char *symbol, void *replacement)
 {
+    static const int flags = RTLD_LOCAL | RTLD_NODELETE | RTLD_LAZY;
     const char *error;
     void *func_ptr = NULL;
     int ret;
     void *dl;
     Dl_info info;
-    int flags = RTLD_LOCAL | RTLD_NODELETE | RTLD_LAZY;
 
     (void)dlerror();
     ret = dladdr((void*)ucm_reloc_get_orig, &info);
