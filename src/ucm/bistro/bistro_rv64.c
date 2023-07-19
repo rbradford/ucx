@@ -38,8 +38,9 @@
   * @brief JALR - Add 12 bit immediate to source register, save to destination
   * register, jump and link from destination register
   *
-  * @param[in] _reg  register number (0-31), @param[out] _reg register number
-  * (0-31), @param[imm] 12 bit immmediate value
+  * @param[in] _regs source register number (0-31)
+  * @param[in] _regd destination register number (0-31)
+  * @param[in] _imm 12 bit immmediate value
   */
 #define JALR(_regs, _regd, _imm) \
     (((_imm) << 20) | ((_regs) << 15) | (0b000 << 12) | ((_regd) << 7) | (0x67))
@@ -48,11 +49,20 @@
   * @brief ADDI - Add 12 bit immediate to source register, save to destination
   * register
   *
-  * @param[in] _reg  register number (0-31), @param[out] _reg register number
-  * (0-31), @param[imm] 12 bit immmediate value
+  * @param[in] _regs source register number (0-31)
+  * @param[in] _regd destination register number (0-31)
+  * @param[in] _imm 12 bit immmediate value
   */
 #define ADDI(_regs, _regd, _imm) \
     (((_imm) << 20) | ((_regs) << 15) | (0b000 << 12) | ((_regd) << 7) | (0x13))
+
+/**
+  * @brief ADD - Add two registers together
+  *
+  * @param[in] _regs_a first source register number (0-31)
+  * @param[in] _regs_b second source register number (0-31)
+  * @param[in] _regd destination register number (0-31)
+  */
 #define ADD(_regs_a, _regs_b, _regd) \
     ((_regs_b << 20) | (_regs_a << 15) | (0b000 << 12) | ((_regd) << 7) | \
      (0x33))
@@ -60,8 +70,8 @@
 /**
   * @brief LUI - load upper 20 bit immediate to destination register
   *
-  * @param[in] _reg  register number (0-31), @param[out] _reg register number
-  * (0-31), @param[imm] 12 bit immmediate value
+  * @param[in] _regd register number (0-31)
+  * @param[in] _imm 12 bit immmediate value
   */
 #define LUI(_regd, _imm) (((_imm) << 12) | ((_regd) << 7) | (0x37))
 
@@ -69,8 +79,9 @@
   * @brief SLLI - left-shift immediate number of bits in source register into
   * destination register
   *
-  * @param[in] _reg  register number (0-31), @param[out] _reg register number
-  * (0-31), @param[imm] 12 bit immmediate value
+  * @param[in] _regs source register number (0-31)
+  * @param[in] _regd destination register number (0-31)
+  * @param[in] _imm 12 bit immmediate value
   */
 #define SLLI(_regs, _regd, _imm) \
     (((_imm) << 20) | ((_regs) << 15) | (0b001 << 12) | ((_regd) << 7) | (0x13))
