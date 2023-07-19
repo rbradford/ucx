@@ -46,6 +46,14 @@
     (((_imm) << 20) | ((_regs) << 15) | (0b000 << 12) | ((_regd) << 7) | (0x67))
 
 /**
+  * @brief C_J - Indirect jump (using compressed instruction)
+  *
+  * @param[in] _imm 12 bit immmediate value
+  */
+#define C_J(_imm) \
+    ((0b101) << 13 | ((_imm >> 1) << 2) | (0b01))
+
+/**
   * @brief ADDI - Add 12 bit immediate to source register, save to destination
   * register
   *
@@ -86,6 +94,14 @@
 #define SLLI(_regs, _regd, _imm) \
     (((_imm) << 20) | ((_regs) << 15) | (0b001 << 12) | ((_regd) << 7) | (0x13))
 
+void ucm_bistro_patch_lock(void *dst)
+{
+    static const ucm_bistro_lock_t self_jmp = {
+        .j = C_J(0)
+    };
+    ucm_bistro_modify_code(dst, &self_jmp);
+}
+
 ucs_status_t ucm_bistro_patch(void *func_ptr, void *hook, const char *symbol,
                               void **orig_func_p,
                               ucm_bistro_restore_point_t **rp)
@@ -119,7 +135,7 @@ ucs_status_t ucm_bistro_patch(void *func_ptr, void *hook, const char *symbol,
         return status;
     }
 
-    return ucm_bistro_apply_patch(func_ptr, &patch, sizeof(patch));
+    return ucm_bistro_apply_patch_atomic(func_ptr, &patch, sizeof(patch));
 }
 
 ucs_status_t ucm_bistro_relocate_one(ucm_bistro_relocate_context_t *ctx)
