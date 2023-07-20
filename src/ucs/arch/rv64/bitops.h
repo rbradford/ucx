@@ -10,44 +10,32 @@
 #include <ucs/sys/compiler_def.h>
 #include <stdint.h>
 
-/* __builtin_ctz(0) is undefined, guard against it. */
-#define ucs_ctz_safe(n) ((n) ? __builtin_ctz(n) : 32)
-
 static UCS_F_ALWAYS_INLINE unsigned __ucs_ilog2_u32(uint32_t n)
 {
-    return ucs_ctz_safe(n);
+    return 31 - __builtin_clz(n);
 }
 
 static UCS_F_ALWAYS_INLINE unsigned __ucs_ilog2_u64(uint64_t n)
 {
-    union input {
-        uint64_t value;
-        struct pvalue {
-            uint32_t rhs;
-            uint32_t lhs;
-        } pvalue;
-    } n_sto = {
-        .value = n
-    };
+    uint32_t lower, upper;
 
-    const int lhs = ucs_ctz_safe(n_sto.pvalue.lhs);
-    const int rhs = ucs_ctz_safe(n_sto.pvalue.rhs);
-
-    int val = rhs;
-    if (rhs == 32) {
-        val = 32 + lhs;
+    upper = n >> 32;
+    lower = n;
+    if (upper == 0) {
+        return __ucs_ilog2_u32(lower);
+    } else {
+        return 32 + __ucs_ilog2_u32(upper);
     }
-    return val;
 }
 
 static UCS_F_ALWAYS_INLINE unsigned ucs_ffs32(uint32_t n)
 {
-    return __ucs_ilog2_u32(n);
+    return __ucs_ilog2_u32(n & -n);
 }
 
 static UCS_F_ALWAYS_INLINE unsigned ucs_ffs64(uint64_t n)
 {
-    return __ucs_ilog2_u64(n);
+    return __ucs_ilog2_u64(n & -n);
 }
 
 #endif
