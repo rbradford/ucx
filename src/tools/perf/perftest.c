@@ -224,9 +224,11 @@ static unsigned sock_rte_group_index(void *rte_group)
 static void sock_rte_barrier(void *rte_group, void (*progress)(void *arg),
                              void *arg)
 {
+#if _OPENMP
 #pragma omp barrier
 
 #pragma omp master
+#endif
   {
     sock_rte_group_t *group = rte_group;
 
@@ -247,7 +249,9 @@ static void sock_rte_barrier(void *rte_group, void (*progress)(void *arg),
         }
     }
   }
+#if _OPENMP
 #pragma omp barrier
+#endif
 }
 
 static void sock_rte_post_vec(void *rte_group, const struct iovec *iovec,
@@ -567,9 +571,11 @@ static void mpi_rte_barrier(void *rte_group, void (*progress)(void *arg),
     int dummy;
     int flag;
 
+#if _OPENMP
 #pragma omp barrier
 
 #pragma omp master
+#endif
   {
     /*
      * Naive non-blocking barrier implementation over send/recv, to call user
@@ -621,7 +627,9 @@ static void mpi_rte_barrier(void *rte_group, void (*progress)(void *arg),
        }
     }
   }
+#if _OPENMP
 #pragma omp barrier
+#endif
 }
 
 static void mpi_rte_post_vec(void *rte_group, const struct iovec *iovec,
