@@ -109,21 +109,22 @@ ucs_status_t ucm_bistro_patch(void *func_ptr, void *hook, const char *symbol,
     ucs_status_t status;
     uintptr_t hookp = (uintptr_t)hook;
     ucm_bistro_patch_t patch;
+    uint32_t hookp_upper, hookp_lower;
 
     /*
      * Account for the fact that JALR, ADD, and ADDI sign extend and may result
      * in subtractions by adding extra to compensate.
      */
-    hookp += ((hookp >> 11) & 0x1) << 12;
-    hookp += ((hookp >> 31) & 0x1) << 32;
-    hookp += ((hookp >> (32 + 11)) & 0x1) << (32 + 12);
-    patch  = (ucm_bistro_patch_t){
-        .rega = LUI(X31, hookp >> (32 + 12)),
-        .regb = ADDI(X31, X31, ((hookp >> 32) & 0xFFF)),
-        .regc = LUI(X30, hookp >> 12),
-        .regd = SLLI(X31, X31, 32),
-        .rege = ADD(X30, X31, X31),
-        .regf = JALR(X31, X0, (hookp & 0xFFF))
+    hookp_upper = (uint32_t)(hookp >> 32) + ((uint32_t)(hookp >> 31) & 1);
+    hookp_lower = (uint32_t) hookp;
+
+    patch = (ucm_bistro_patch_t) {
+      .rega = LUI(X31, ((hookp_upper >> 12) + ((hookp_upper >> 11) & 1)) & 0xFFFFF),
+      .regb = ADDI(X31, X31, hookp_upper & 0xFFF),
+      .regc = SLLI(X31, X31, 32),
+      .regd = LUI(X30, ((hookp_lower >> 12) + ((hookp_lower >> 11) & 1)) & 0xFFFFF),
+      .rege = ADD(X31, X31, X30),
+      .regf = JALR(X0 , X31, hookp_lower & 0xFFF),
     };
 
     if (orig_func_p != NULL) {
