@@ -124,7 +124,7 @@ ucs_status_t ucm_bistro_patch(void *func_ptr, void *hook, const char *symbol,
       .regc = SLLI(X31, X31, 32),
       .regd = LUI(X30, ((hookp_lower >> 12) + ((hookp_lower >> 11) & 1)) & 0xFFFFF),
       .rege = ADD(X31, X31, X30),
-      .regf = JALR(X0 , X31, hookp_lower & 0xFFF),
+      .regf = JALR(X31, X0, hookp_lower & 0xFFF),
     };
 
     if (orig_func_p != NULL) {
