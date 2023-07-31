@@ -18,12 +18,11 @@
 #define UCM_BISTRO_EPILOGUE
 
 typedef struct ucm_bistro_patch {
-    uint32_t rega; /* load bits 63-43          */
-    uint32_t regb; /* add bits 43-31           */
-    uint32_t regc; /* load bits 30-11          */
-    uint32_t regd; /* shift upper 32 bits left */
-    uint32_t rege; /* add bits 10-0            */
-    uint32_t regf; /* perform jump             */
+    uint32_t auipc;   /* Get current PC. */
+    uint32_t ld;      /* Load from PC+0x10 */
+    uint32_t jalr;    /* Jump and link. */
+    uint32_t spare;   /* Empty slot for alignment. */
+    uint64_t address; /* The address to jump to. */
 } UCS_S_PACKED ucm_bistro_patch_t;
 
 
