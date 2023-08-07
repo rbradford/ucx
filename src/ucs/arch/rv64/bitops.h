@@ -17,25 +17,17 @@ static UCS_F_ALWAYS_INLINE unsigned __ucs_ilog2_u32(uint32_t n)
 
 static UCS_F_ALWAYS_INLINE unsigned __ucs_ilog2_u64(uint64_t n)
 {
-    uint32_t lower, upper;
-
-    upper = n >> 32;
-    lower = n;
-    if (upper == 0) {
-        return __ucs_ilog2_u32(lower);
-    } else {
-        return 32 + __ucs_ilog2_u32(upper);
-    }
+    return 63 - __builtin_clzll(n);
 }
 
 static UCS_F_ALWAYS_INLINE unsigned ucs_ffs32(uint32_t n)
 {
-    return __ucs_ilog2_u32(n & -n);
+    return __builtin_ffs(n);
 }
 
 static UCS_F_ALWAYS_INLINE unsigned ucs_ffs64(uint64_t n)
 {
-    return __ucs_ilog2_u64(n & -n);
+    return __builtin_ffsll(n);
 }
 
 #endif
