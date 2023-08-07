@@ -17,7 +17,6 @@ ucs_config_field_t ucs_arch_global_opts_table[] = {
     {NULL}
 };
 
-
 void ucs_arch_print_memcpy_limits(ucs_arch_global_opts_t *config)
 {
 }
