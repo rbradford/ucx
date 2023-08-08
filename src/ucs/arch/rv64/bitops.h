@@ -22,12 +22,12 @@ static UCS_F_ALWAYS_INLINE unsigned __ucs_ilog2_u64(uint64_t n)
 
 static UCS_F_ALWAYS_INLINE unsigned ucs_ffs32(uint32_t n)
 {
-    return __builtin_ffs(n);
+    return __ucs_ilog2_u32(n & -n);
 }
 
 static UCS_F_ALWAYS_INLINE unsigned ucs_ffs64(uint64_t n)
 {
-    return __builtin_ffsll(n);
+    return __ucs_ilog2_u64(n & -n);
 }
 
 #endif
