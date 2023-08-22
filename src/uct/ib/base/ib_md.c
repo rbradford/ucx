@@ -173,6 +173,10 @@ static ucs_config_field_t uct_ib_md_config_table[] = {
      "Maximal number of invalidated memory keys that are kept idle before reuse.",
      ucs_offsetof(uct_ib_md_config_t, ext.max_idle_rkey_count), UCS_CONFIG_TYPE_UINT},
 
+    {"REG_RETRY_CNT", "7",
+     "Number of memory registration attempts.",
+     ucs_offsetof(uct_ib_md_config_t, ext.reg_retry_cnt), UCS_CONFIG_TYPE_UINT},
+
     {NULL}
 };
 
@@ -227,20 +231,20 @@ static uct_ib_md_ops_entry_t *uct_ib_ops[] = {
     &UCT_IB_MD_OPS_NAME(verbs)
 };
 
-typedef struct uct_ib_verbs_mem {
+typedef struct {
     uct_ib_mem_t        super;
     uct_ib_mr_t         mrs[];
 } uct_ib_verbs_mem_t;
 
 typedef struct {
-    pthread_t     thread;
-    void          *addr;
-    size_t        len;
-    size_t        chunk;
-    uint64_t      access;
-    struct ibv_pd *pd;
-    struct ibv_mr **mr;
-    int           silent;
+    pthread_t                     thread;
+    uct_ib_md_t                   *md;
+    int                           reg;
+    void                          *address;
+    size_t                        length;
+    const uct_md_mem_reg_params_t *params;
+    uint64_t                      access_flags;
+    struct ibv_mr                 **mrs;
 } uct_ib_md_mem_reg_thread_t;
 
 
@@ -306,57 +310,59 @@ uct_ib_md_print_mem_reg_err_msg(const char *title, void *address, size_t length,
 void *uct_ib_md_mem_handle_thread_func(void *arg)
 {
     uct_ib_md_mem_reg_thread_t *ctx = arg;
+    size_t max_chunk                = ctx->md->config.mt_reg_chunk;
+    ucs_time_t UCS_V_UNUSED t0      = ucs_get_time();
+    int mr_idx                      = 0;
     ucs_status_t status;
-    int mr_idx = 0;
-    size_t size = 0;
-    ucs_time_t UCS_V_UNUSED t0 = ucs_get_time();
+    size_t length;
 
-    while (ctx->len) {
-        size = ucs_min(ctx->len, ctx->chunk);
-        if (ctx->access != UCT_IB_MEM_DEREG) {
-            ctx->mr[mr_idx] = UCS_PROFILE_CALL_ALWAYS(ibv_reg_mr, ctx->pd,
-                                                      ctx->addr, size,
-                                                      ctx->access);
-            if (ctx->mr[mr_idx] == NULL) {
-                uct_ib_md_print_mem_reg_err_msg("ibv_reg_mr", ctx->addr, size,
-                                                ctx->access, errno,
-                                                ctx->silent);
-                return UCS_STATUS_PTR(UCS_ERR_IO_ERROR);
+    while (ctx->length > 0) {
+        length = ucs_min(ctx->length, max_chunk);
+        if (ctx->params != NULL) {
+            status = uct_ib_reg_mr_params(ctx->md, ctx->address, length,
+                                          ctx->params, ctx->access_flags,
+                                          &ctx->mrs[mr_idx]);
+            if (status != UCS_OK) {
+                goto err_dereg;
             }
         } else {
-            status = uct_ib_dereg_mr(ctx->mr[mr_idx]);
+            status = uct_ib_dereg_mr(ctx->mrs[mr_idx]);
             if (status != UCS_OK) {
-                return UCS_STATUS_PTR(status);
+                goto err;
             }
         }
-        ctx->addr  = UCS_PTR_BYTE_OFFSET(ctx->addr, size);
-        ctx->len  -= size;
+        ctx->address = UCS_PTR_BYTE_OFFSET(ctx->address, length);
+        ctx->length -= length;
         mr_idx++;
     }
 
-    ucs_trace("%s %p..%p took %f usec\n",
-              (ctx->access == UCT_IB_MEM_DEREG) ? "dereg_mr" : "reg_mr",
-              ctx->mr[0]->addr,
-              UCS_PTR_BYTE_OFFSET(ctx->mr[mr_idx-1]->addr, size),
+    ucs_trace("%s %p..%p took %f usec\n", ctx->reg ? "reg_mr" : "dereg_mr",
+              ctx->mrs[0]->addr, ctx->address,
               ucs_time_to_usec(ucs_get_time() - t0));
-
     return UCS_STATUS_PTR(UCS_OK);
+
+err_dereg:
+    for (; mr_idx >= 0; --mr_idx) {
+        uct_ib_dereg_mr(ctx->mrs[mr_idx]);
+    }
+err:
+    return UCS_STATUS_PTR(status);
 }
 
 ucs_status_t
-uct_ib_md_handle_mr_list_multithreaded(uct_ib_md_t *md, void *address,
-                                       size_t length, uint64_t access_flags,
-                                       size_t chunk, struct ibv_mr **mrs,
-                                       int silent)
+uct_ib_md_handle_mr_list_mt(uct_ib_md_t *md, void *address, size_t length,
+                            const uct_md_mem_reg_params_t *params,
+                            uint64_t access_flags, struct ibv_mr **mrs)
 {
-    int thread_num_mrs, thread_num, thread_idx, mr_idx = 0, cpu_id = 0;
-    int mr_num = ucs_div_round_up(length, chunk);
+    size_t chunk_size = md->config.mt_reg_chunk;
+    int mr_num        = ucs_div_round_up(length, chunk_size);
+    int thread_num_mrs, thread_num, thread_idx, mr_idx, cpu_id;
+    ucs_sys_cpuset_t parent_set, thread_set;
+    uct_ib_md_mem_reg_thread_t *ctxs, *ctx;
+    char UCS_V_UNUSED affinity_str[64];
+    pthread_attr_t attr;
     ucs_status_t status;
     void *thread_status;
-    ucs_sys_cpuset_t parent_set, thread_set;
-    uct_ib_md_mem_reg_thread_t *ctxs, *cur_ctx;
-    pthread_attr_t attr;
-    char UCS_V_UNUSED affinity_str[64];
     int ret;
 
     status = ucs_sys_pthread_getaffinity(&parent_set);
@@ -365,14 +371,15 @@ uct_ib_md_handle_mr_list_multithreaded(uct_ib_md_t *md, void *address,
     }
 
     thread_num = ucs_min(CPU_COUNT(&parent_set), mr_num);
-
-    ucs_trace("multithreaded handle %p..%p access %lx threads %d affinity %s\n",
-              address, UCS_PTR_BYTE_OFFSET(address, length), access_flags, thread_num,
-              ucs_make_affinity_str(&parent_set, affinity_str, sizeof(affinity_str)));
-
     if (thread_num == 1) {
         return UCS_ERR_UNSUPPORTED;
     }
+
+    ucs_trace("multithreaded %s %p..%p threads %d affinity %s\n",
+              (params != NULL) ? "reg" : "dereg", address,
+              UCS_PTR_BYTE_OFFSET(address, length), thread_num,
+              ucs_make_affinity_str(&parent_set, affinity_str,
+                                    sizeof(affinity_str)));
 
     ctxs = ucs_calloc(thread_num, sizeof(*ctxs), "ib mr ctxs");
     if (ctxs == NULL) {
@@ -382,19 +389,21 @@ uct_ib_md_handle_mr_list_multithreaded(uct_ib_md_t *md, void *address,
     pthread_attr_init(&attr);
 
     status = UCS_OK;
+    mr_idx = 0;
+    cpu_id = 0;
     for (thread_idx = 0; thread_idx < thread_num; thread_idx++) {
         /* calculate number of mrs for each thread so each one will
          * get proportional amount */
-        thread_num_mrs  = ucs_div_round_up(mr_num - mr_idx, thread_num - thread_idx);
-
-        cur_ctx         = &ctxs[thread_idx];
-        cur_ctx->pd     = md->pd;
-        cur_ctx->addr   = UCS_PTR_BYTE_OFFSET(address, mr_idx * chunk);
-        cur_ctx->len    = ucs_min(thread_num_mrs * chunk, length - (mr_idx * chunk));
-        cur_ctx->access = access_flags;
-        cur_ctx->mr     = &mrs[mr_idx];
-        cur_ctx->chunk  = chunk;
-        cur_ctx->silent = silent;
+        thread_num_mrs    = ucs_div_round_up(mr_num - mr_idx,
+                                             thread_num - thread_idx);
+        ctx               = &ctxs[thread_idx];
+        ctx->md           = md;
+        ctx->address      = UCS_PTR_BYTE_OFFSET(address, mr_idx * chunk_size);
+        ctx->length       = ucs_min(thread_num_mrs * chunk_size,
+                                    length - (mr_idx * chunk_size));
+        ctx->params       = params;
+        ctx->access_flags = access_flags;
+        ctx->mrs          = &mrs[mr_idx];
 
         if (md->config.mt_reg_bind) {
             while (!CPU_ISSET(cpu_id, &parent_set)) {
@@ -404,12 +413,13 @@ uct_ib_md_handle_mr_list_multithreaded(uct_ib_md_t *md, void *address,
             CPU_ZERO(&thread_set);
             CPU_SET(cpu_id, &thread_set);
             cpu_id++;
-            pthread_attr_setaffinity_np(&attr, sizeof(ucs_sys_cpuset_t), &thread_set);
+            pthread_attr_setaffinity_np(&attr, sizeof(ucs_sys_cpuset_t),
+                                        &thread_set);
         }
 
-        ret = pthread_create(&cur_ctx->thread, &attr,
-                             uct_ib_md_mem_handle_thread_func, cur_ctx);
-        if (ret) {
+        ret = pthread_create(&ctx->thread, &attr,
+                             uct_ib_md_mem_handle_thread_func, ctx);
+        if (ret != 0) {
             ucs_error("pthread_create() failed: %m");
             status     = UCS_ERR_IO_ERROR;
             thread_num = thread_idx;
@@ -420,8 +430,8 @@ uct_ib_md_handle_mr_list_multithreaded(uct_ib_md_t *md, void *address,
     }
 
     for (thread_idx = 0; thread_idx < thread_num; thread_idx++) {
-        cur_ctx = &ctxs[thread_idx];
-        pthread_join(cur_ctx->thread, &thread_status);
+        ctx = &ctxs[thread_idx];
+        pthread_join(ctx->thread, &thread_status);
         if (UCS_PTR_IS_ERR(thread_status)) {
             status = UCS_PTR_STATUS(thread_status);
         }
@@ -469,15 +479,21 @@ uct_ib_md_reg_mr(uct_ib_md_t *md, void *address, size_t length,
 
 ucs_status_t uct_ib_reg_mr(struct ibv_pd *pd, void *addr, size_t length,
                            uint64_t access, int dmabuf_fd, size_t dmabuf_offset,
-                           struct ibv_mr **mr_p, int silent)
+                           struct ibv_mr **mr_p, int silent, unsigned retry_cnt)
 {
     ucs_time_t UCS_V_UNUSED start_time = ucs_get_time();
+    unsigned retry                     = 0;
     const char *title;
     struct ibv_mr *mr;
 
     if (dmabuf_fd == UCT_DMABUF_FD_INVALID) {
         title = "ibv_reg_mr";
-        mr    = UCS_PROFILE_CALL_ALWAYS(ibv_reg_mr, pd, addr, length, access);
+        do {
+            /* when access_flags contains IBV_ACCESS_ON_DEMAND ibv_reg_mr() may
+             * fail with EAGAIN. It means prefetch failed due to collision
+             * with invalidation */
+            mr = UCS_PROFILE_CALL_ALWAYS(ibv_reg_mr, pd, addr, length, access);
+        } while ((mr == NULL) && (errno == EAGAIN) && (retry++ < retry_cnt));
     } else {
 #if HAVE_DECL_IBV_REG_DMABUF_MR
         title = "ibv_reg_dmabuf_mr";
@@ -498,9 +514,9 @@ ucs_status_t uct_ib_reg_mr(struct ibv_pd *pd, void *addr, size_t length,
 
     /* to prevent clang dead code */
     ucs_trace("%s(pd=%p addr=%p len=%zu fd=%d offset=%zu access=0x%lx): mr=%p "
-              "lkey=0x%x took %.3f ms",
+              "lkey=0x%x retry=%d took %.3f ms",
               title, pd, addr, length, dmabuf_fd, dmabuf_offset, access, mr,
-              mr->lkey, ucs_time_to_msec(ucs_get_time() - start_time));
+              mr->lkey, retry, ucs_time_to_msec(ucs_get_time() - start_time));
     return UCS_OK;
 }
 
@@ -521,7 +537,8 @@ ucs_status_t uct_ib_reg_mr_params(uct_ib_md_t *md, void *address, size_t length,
 
     status = uct_ib_reg_mr(md->pd, address, length, access_flags, dmabuf_fd,
                            dmabuf_offset, mr_p,
-                           flags & UCT_MD_MEM_FLAG_HIDE_ERRORS);
+                           flags & UCT_MD_MEM_FLAG_HIDE_ERRORS,
+                           md->config.reg_retry_cnt);
     if (status != UCS_OK) {
         return status;
     }
@@ -548,21 +565,6 @@ ucs_status_t uct_ib_dereg_mr(struct ibv_mr *mr)
     }
 
     return UCS_OK;
-}
-
-ucs_status_t uct_ib_dereg_mrs(struct ibv_mr **mrs, size_t mr_num)
-{
-    ucs_status_t s, status = UCS_OK;
-    int i;
-
-    for (i = 0; i < mr_num; i++) {
-        s = uct_ib_dereg_mr(mrs[i]);
-        if (s != UCS_OK) {
-            status = s;
-        }
-    }
-
-    return status;
 }
 
 static ucs_status_t uct_ib_memh_dereg_key(uct_ib_md_t *md, uct_ib_mem_t *memh,
@@ -612,19 +614,6 @@ static void uct_ib_mem_init(uct_ib_mem_t *memh, uint32_t flags)
     memh->atomic_rkey   = UCT_IB_INVALID_MKEY;
     memh->indirect_rkey = UCT_IB_INVALID_MKEY;
     memh->flags         = flags;
-}
-
-uct_ib_mem_t *uct_ib_memh_alloc(uct_ib_md_t *md, uint32_t flags)
-{
-    uct_ib_mem_t *memh;
-
-    memh = ucs_calloc(1, md->memh_struct_size, "ib_memh");
-    if (memh == NULL) {
-        return NULL;
-    }
-
-    uct_ib_mem_init(memh, flags);
-    return memh;
 }
 
 static uint64_t uct_ib_md_access_flags(uct_ib_md_t *md, unsigned flags,
@@ -751,6 +740,7 @@ uct_ib_mem_reg_params_to_internal(const uct_md_mem_reg_params_t *params,
 
 ucs_status_t uct_ib_mem_reg(uct_md_h uct_md, void *address, size_t length,
                             const uct_md_mem_reg_params_t *params,
+                            size_t memh_base_size, size_t mr_size,
                             uct_mem_h *memh_p)
 {
     uct_ib_md_t *md = ucs_derived_of(uct_md, uct_ib_md_t);
@@ -760,11 +750,9 @@ ucs_status_t uct_ib_mem_reg(uct_md_h uct_md, void *address, size_t length,
 
     uct_ib_mem_reg_params_to_internal(params, &reg_params);
 
-    memh = uct_ib_memh_alloc(md, 0);
-    if (memh == NULL) {
-        uct_ib_md_log_mem_reg_error(md, reg_params.flags,
-                                    "failed to allocate memory handle");
-        return UCS_ERR_NO_MEMORY;
+    status = uct_ib_memh_alloc(md, length, 0, memh_base_size, mr_size, &memh);
+    if (status != UCS_OK) {
+        goto out;
     }
 
     status = uct_ib_mem_reg_internal(uct_md, address, length, &reg_params,
@@ -778,6 +766,7 @@ ucs_status_t uct_ib_mem_reg(uct_md_h uct_md, void *address, size_t length,
 
 err_memh_free:
     ucs_free(memh);
+out:
     return status;
 }
 
@@ -811,7 +800,8 @@ ucs_status_t uct_ib_reg_key_impl(uct_ib_md_t *md, void *address, size_t length,
     ucs_status_t status;
 
     status = uct_ib_reg_mr(md->pd, address, length, access_flags, dmabuf_fd,
-                           dmabuf_offset, &mr->ib, silent);
+                           dmabuf_offset, &mr->ib, silent,
+                           md->config.reg_retry_cnt);
     if (status != UCS_OK) {
         return status;
     }
@@ -927,9 +917,9 @@ ucs_status_t uct_ib_mkey_pack(uct_md_h uct_md, uct_mem_h uct_memh,
     return UCS_OK;
 }
 
-ucs_status_t uct_ib_memh_new(uct_ib_md_t *md, size_t length, unsigned mem_flags,
-                             size_t memh_base_size, size_t mr_size,
-                             uct_ib_mem_t **memh_p)
+ucs_status_t uct_ib_memh_alloc(uct_ib_md_t *md, size_t length,
+                               unsigned mem_flags, size_t memh_base_size,
+                               size_t mr_size, uct_ib_mem_t **memh_p)
 {
     int num_mrs = md->relaxed_order ?
                           2 /* UCT_IB_MR_DEFAULT and UCT_IB_MR_STRICT_ORDER */ :
@@ -989,10 +979,10 @@ ucs_status_t uct_ib_verbs_mem_reg(uct_md_h uct_md, void *address, size_t length,
     uint64_t access_flags;
     ucs_status_t status;
 
-    status = uct_ib_memh_new(md, length,
-                             UCT_MD_MEM_REG_FIELD_VALUE(params, flags,
-                                                        FIELD_FLAGS, 0),
-                             sizeof(*memh), sizeof(memh->mrs[0]), &ib_memh);
+    status = uct_ib_memh_alloc(md, length,
+                               UCT_MD_MEM_REG_FIELD_VALUE(params, flags,
+                                                          FIELD_FLAGS, 0),
+                               sizeof(*memh), sizeof(memh->mrs[0]), &ib_memh);
     if (status != UCS_OK) {
         goto err;
     }
@@ -1456,21 +1446,9 @@ out:
     return status;
 }
 
-
-static void uct_ib_md_init_memh_size(uct_ib_md_t *md, size_t memh_base_size,
-                                     size_t mr_size)
-{
-    int num_mrs = md->relaxed_order ?
-                  2 /* UCT_IB_MR_DEFAULT and UCT_IB_MR_STRICT_ORDER */ :
-                  1 /* UCT_IB_MR_DEFAULT */;
-
-    md->memh_struct_size = memh_base_size + (mr_size * num_mrs);
-}
-
 void uct_ib_md_parse_relaxed_order(uct_ib_md_t *md,
                                    const uct_ib_md_config_t *md_config,
-                                   int is_supported,
-                                   size_t memh_base_size, size_t mr_size)
+                                   int is_supported)
 {
     int have_relaxed_order = (IBV_ACCESS_RELAXED_ORDERING != 0) && is_supported;
 
@@ -1489,9 +1467,6 @@ void uct_ib_md_parse_relaxed_order(uct_ib_md_t *md,
         md->relaxed_order = have_relaxed_order &&
                             ucs_cpu_prefer_relaxed_order();
     }
-
-    /* Reset the memory handler size */
-    uct_ib_md_init_memh_size(md, memh_base_size, mr_size);
 
     ucs_debug("%s: relaxed order memory access is %sabled",
               uct_ib_device_name(&md->dev), md->relaxed_order ? "en" : "dis");
@@ -1775,9 +1750,7 @@ static ucs_status_t uct_ib_verbs_md_open(struct ibv_device *ibv_device,
     md->flush_rkey = UCT_IB_MD_INVALID_FLUSH_RKEY;
 
     uct_ib_md_ece_check(md);
-    uct_ib_md_parse_relaxed_order(md, md_config, 0,
-                                  sizeof(uct_ib_verbs_mem_t),
-                                  sizeof(uct_ib_mr_t));
+    uct_ib_md_parse_relaxed_order(md, md_config, 0);
 
     *p_md = md;
     return UCS_OK;

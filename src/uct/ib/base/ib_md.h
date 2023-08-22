@@ -25,7 +25,6 @@
                                   IBV_ACCESS_REMOTE_READ | \
                                   IBV_ACCESS_REMOTE_ATOMIC)
 
-#define UCT_IB_MEM_DEREG          0
 #define UCT_IB_CONFIG_PREFIX      "IB_"
 
 #define UCT_IB_MD_NAME(_x)        "ib_" UCS_PP_QUOTE(_x)
@@ -62,8 +61,8 @@ enum {
     UCT_IB_MEM_FLAG_RELAXED_ORDERING = UCS_BIT(4), /**< The memory region will issue
                                                         PCIe writes with relaxed order
                                                         attribute */
-    UCT_IB_MEM_FLAG_NO_RCACHE        = UCS_BIT(5), /**< Memory handle wasn't stored
-                                                        in RCACHE */
+    UCT_IB_MEM_FLAG_IMPORTED         = UCS_BIT(5), /**< The memory handle was
+                                                        created by mem_attach */
 #if ENABLE_PARAMS_CHECK
     UCT_IB_MEM_ACCESS_REMOTE_RMA     = UCS_BIT(6) /**< RMA access was requested
                                                         for the memory region */
@@ -102,10 +101,11 @@ typedef struct uct_ib_md_ext_config {
                                                        invalidated memory keys
                                                        that are kept idle before
                                                        reuse*/
+    unsigned                 reg_retry_cnt; /**< Memory registration retry count */
 } uct_ib_md_ext_config_t;
 
 
-typedef struct uct_ib_mem {
+typedef struct {
     uint32_t                lkey;
     uint32_t                exported_lkey;
     uint32_t                rkey;
@@ -115,7 +115,7 @@ typedef struct uct_ib_mem {
 } uct_ib_mem_t;
 
 
-typedef union uct_ib_mr {
+typedef struct {
     struct ibv_mr           *ib;
 } uct_ib_mr_t;
 
@@ -150,7 +150,6 @@ typedef struct uct_ib_md {
     double                   pci_bw;
     int                      relaxed_order;
     int                      fork_init;
-    size_t                   memh_struct_size;
     uint64_t                 reg_mem_types;
     uint64_t                 reg_nonblock_mem_types;
     uint64_t                 cap_flags;
@@ -161,13 +160,13 @@ typedef struct uct_ib_md {
      * means that flush_rkey is invalid and flush_remote operation could not
      * be initiated.  */
     uint32_t                 flush_rkey;
-    uct_ib_uint128_t         vhca_id;
+    uint16_t                 vhca_id;
 } uct_ib_md_t;
 
 
 typedef struct uct_ib_md_packed_mkey {
-    uint32_t         lkey;
-    uct_ib_uint128_t vhca_id;
+    uint32_t lkey;
+    uint16_t vhca_id;
 } UCS_S_PACKED uct_ib_md_packed_mkey_t;
 
 
@@ -427,8 +426,8 @@ uct_ib_md_pack_exported_mkey(uct_ib_md_t *md, uint32_t lkey, void *buffer)
 {
     uct_ib_md_packed_mkey_t *mkey = (uct_ib_md_packed_mkey_t*)buffer;
 
-    mkey->lkey = lkey;
-    memcpy(mkey->vhca_id, md->vhca_id, sizeof(md->vhca_id));
+    mkey->lkey    = lkey;
+    mkey->vhca_id = md->vhca_id;
 
     ucs_trace("packed exported mkey on %s: lkey 0x%x",
               uct_ib_device_name(&md->dev), lkey);
@@ -563,13 +562,13 @@ ucs_status_t uct_ib_md_open(uct_component_t *component, const char *md_name,
 
 void uct_ib_md_parse_relaxed_order(uct_ib_md_t *md,
                                    const uct_ib_md_config_t *md_config,
-                                   int is_supported,
-                                   size_t memh_base_size, size_t mr_size);
+                                   int is_supported);
 
 ucs_status_t uct_ib_md_query(uct_md_h uct_md, uct_md_attr_v2_t *md_attr);
 
 ucs_status_t uct_ib_mem_reg(uct_md_h uct_md, void *address, size_t length,
                             const uct_md_mem_reg_params_t *params,
+                            size_t memh_base_size, size_t mr_size,
                             uct_mem_h *memh_p);
 
 ucs_status_t
@@ -581,8 +580,6 @@ ucs_status_t uct_ib_mem_advise(uct_md_h uct_md, uct_mem_h memh, void *addr,
 ucs_status_t uct_ib_mkey_pack(uct_md_h uct_md, uct_mem_h uct_memh,
                               const uct_md_mkey_pack_params_t *params,
                               void *mkey_buffer);
-
-uct_ib_mem_t *uct_ib_memh_alloc(uct_ib_md_t *md, uint32_t flags);
 
 int uct_ib_device_is_accessible(struct ibv_device *device);
 
@@ -601,14 +598,10 @@ void uct_ib_md_free(uct_ib_md_t *md);
 
 void uct_ib_md_close(uct_md_h tl_md);
 
-ucs_status_t uct_ib_reg_mr(struct ibv_pd *pd, void *addr, size_t length,
-                           uint64_t access, int dmabuf_fd, size_t dmabuf_offset,
-                           struct ibv_mr **mr_p, int silent);
 ucs_status_t uct_ib_reg_mr_params(uct_ib_md_t *md, void *address, size_t length,
                                   const uct_md_mem_reg_params_t *params,
                                   uint64_t access_flags, struct ibv_mr **mr_p);
 ucs_status_t uct_ib_dereg_mr(struct ibv_mr *mr);
-ucs_status_t uct_ib_dereg_mrs(struct ibv_mr **mrs, size_t mr_num);
 
 
 /**
@@ -618,10 +611,9 @@ void uct_ib_md_ece_check(uct_ib_md_t *md);
 
 
 ucs_status_t
-uct_ib_md_handle_mr_list_multithreaded(uct_ib_md_t *md, void *address,
-                                       size_t length, uint64_t access,
-                                       size_t chunk, struct ibv_mr **mrs,
-                                       int silent);
+uct_ib_md_handle_mr_list_mt(uct_ib_md_t *md, void *address, size_t length,
+                            const uct_md_mem_reg_params_t *params,
+                            uint64_t access_flags, struct ibv_mr **mrs);
 
 ucs_status_t uct_ib_reg_key_impl(uct_ib_md_t *md, void *address, size_t length,
                                  uint64_t access_flags, int dmabuf_fd,
@@ -642,8 +634,8 @@ ucs_status_t uct_ib_verbs_mkey_pack(uct_md_h uct_md, uct_mem_h uct_memh,
                                     const uct_md_mkey_pack_params_t *params,
                                     void *mkey_buffer);
 
-ucs_status_t uct_ib_memh_new(uct_ib_md_t *md, size_t length, unsigned mem_flags,
-                             size_t memh_base_size, size_t mr_size,
-                             uct_ib_mem_t **memh_p);
+ucs_status_t uct_ib_memh_alloc(uct_ib_md_t *md, size_t length,
+                               unsigned mem_flags, size_t memh_base_size,
+                               size_t mr_size, uct_ib_mem_t **memh_p);
 
 #endif
